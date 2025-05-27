@@ -4,14 +4,39 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ecs from 'aws-cdk-lib/aws-ecs';
+
+interface EphemeralFargateStackProps extends StackProps {
+  vpcId?: string;  // optional VPC ID to use
+}
 
 export class EphemeralFargateStack extends Stack {
-  constructor(scope: cdk.App, id: string, props?: StackProps) {
+  public readonly vpc: ec2.IVpc;
+
+  constructor(scope: cdk.App, id: string, props?: EphemeralFargateStackProps) {
     super(scope, id, props);
 
+    // --- VPC logic ---
+    if (props?.vpcId && props.vpcId !== '') {
+      this.vpc = ec2.Vpc.fromLookup(this, 'ImportedVPC', {
+        vpcId: props.vpcId,
+      });
+    } else {
+      this.vpc = new ec2.Vpc(this, 'NewVPC', {
+        maxAzs: 2,
+        natGateways: 1,
+      });
+    }
+
+    // --- Example: create an ECS cluster in the VPC ---
+    const cluster = new ecs.Cluster(this, 'FargateCluster', {
+      vpc: this.vpc,
+    });
+
+    // --- Existing Lambda and EventBridge self-destruct ---
     const stackName = this.stackName;
 
-    // Lambda to destroy the stack
     const destroyLambda = new lambda.Function(this, 'DestroyStackLambda', {
       runtime: lambda.Runtime.NODEJS_16_X,
       handler: 'index.handler',
@@ -32,14 +57,12 @@ export class EphemeralFargateStack extends Stack {
       ],
     });
 
-    // Allow EventBridge to invoke Lambda
     destroyLambda.addPermission('AllowEventBridgeInvoke', {
       principal: new iam.ServicePrincipal('events.amazonaws.com'),
       action: 'lambda:InvokeFunction',
       sourceArn: `arn:aws:events:${this.region}:${this.account}:rule/SelfDestructRule`,
     });
 
-    // EventBridge rule: 2 minute timer
     const rule = new events.Rule(this, 'SelfDestructRule', {
       schedule: events.Schedule.expression('rate(2 minutes)'),
     });
